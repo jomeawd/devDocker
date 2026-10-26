@@ -4,36 +4,59 @@ services:
     environment:
       FLIGHT_PROVIDER: ${FLIGHT_PROVIDER:-mock}
       TRAVELPAYOUTS_TOKEN: ${TRAVELPAYOUTS_TOKEN:-}
-      FPM_MAX_CHILDREN: 4
-      PHP_MEMORY_LIMIT: 128M
+      FPM_MAX_CHILDREN: ${FPM_MAX_CHILDREN:-4}
+      PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-48M}
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 256M
+          cpus: "${BACK_CPUS:-1}"
+          memory: ${BACK_MEMORY:-256M}
+    healthcheck:
+      test: ["CMD", "php83", "-r", "exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 10s
 
   front:
     build: ./front
     environment:
-      PORT: 3000
-      NODE_MAX_MEMORY: 96
+      PORT: ${FRONT_PORT:-3000}
+      NODE_MAX_MEMORY: ${NODE_MAX_MEMORY:-96}
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 128M
+          cpus: "${FRONT_CPUS:-0.5}"
+          memory: ${FRONT_MEMORY:-128M}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$$PORT/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 10s
 
   proxy:
     build: ./proxy
     ports:
-      - "8088:80"
+      - "${PROXY_PORT:-8088}:80"
     environment:
-      NGINX_WORKER_PROCESSES: 2
+      NGINX_WORKER_PROCESSES: ${NGINX_WORKER_PROCESSES:-2}
+      FRONT_PORT: ${FRONT_PORT:-3000}
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 64M
+          cpus: "${PROXY_CPUS:-0.5}"
+          memory: ${PROXY_MEMORY:-64M}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    stop_grace_period: 10s
     depends_on:
-      - back
-      - front
+      back:
+        condition: service_healthy
+      front:
+        condition: service_healthy
