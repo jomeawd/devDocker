@@ -66,9 +66,35 @@ sequenceDiagram
 
 ## Les images
 
-Les trois images partent d'`alpine:3.22` et installent elles-mêmes tout ce dont elles ont besoin. Aucune image
-« toute faite » (`nginx`, `php`, `node`...) n'est utilisée. Alpine a été choisie parce qu'elle fait environ 8 Mo, qu'elle
-a un gestionnaire de paquets (`apk`) avec des versions récentes, et `--no-cache` évite de garder l'index des paquets dans l'image.
+**Aucune image ne vient de Docker Hub**, même pas l'OS. On construit d'abord notre propre image de base `devdocker-base`
+à partir de `scratch` (image vide), puis les trois images du projet partent de celle-ci.
+
+```mermaid
+flowchart LR
+    S[scratch<br/>image vide] --> BA["devdocker-base<br/>rootfs Alpine 3.22.7"]
+    BA --> PR[devdocker-proxy]
+    BA --> BK[devdocker-back]
+    BA --> FR[devdocker-front]
+```
+
+### base (OS)
+
+[base/Dockerfile](base/Dockerfile)
+
+- `FROM scratch` : on part d'une image totalement vide.
+- `ADD rootfs-${TARGETARCH}.tar.gz /` : on décompresse le **minirootfs officiel d'Alpine 3.22.7**, téléchargé sur
+  [alpinelinux.org](https://alpinelinux.org/downloads/) (et pas sur Docker Hub). Les sommes SHA256 ont été vérifiées avec
+  celles publiées par Alpine. `ADD` décompresse tout seul une archive locale.
+- Il y a deux archives, `rootfs-arm64.tar.gz` (Mac M1/M2...) et `rootfs-amd64.tar.gz` (PC x86). `TARGETARCH` est rempli
+  automatiquement par BuildKit, donc la bonne est choisie selon la machine. Testé sur les deux architectures.
+- `ENV PATH=...` : une image `scratch` n'a aucune variable, on définit le `PATH` pour trouver les commandes.
+
+Alpine a été choisie parce qu'elle fait environ 8 Mo, qu'elle a un gestionnaire de paquets (`apk`) avec des versions
+récentes, et `--no-cache` évite de garder l'index des paquets dans l'image.
+
+Dans le compose, le service `base` construit cette image. Les autres services la reçoivent avec
+`additional_contexts: base: service:base` (le `FROM base` de leur Dockerfile), ce qui oblige compose à construire `base`
+en premier. Le conteneur `base` lance juste `true` et s'arrête aussitôt (`Exited (0)`, c'est normal).
 
 ### proxy (serveur web)
 
@@ -91,9 +117,16 @@ a un gestionnaire de paquets (`apk`) avec des versions récentes, et `--no-cache
 
 **Port exposé** : `80` (HTTP).
 
-**Entrypoint** : `CMD envsubst ... && exec nginx -g 'daemon off;'`
+**Entrypoint** : `ENTRYPOINT ["/entrypoint.sh"]` + `CMD ["nginx", "-g", "daemon off;"]`
+
+[proxy/entrypoint.sh](proxy/entrypoint.sh) :
+1. vérifie que `NGINX_WORKER_PROCESSES` et `FRONT_PORT` sont des nombres, sinon le conteneur s'arrête avec un message clair ;
+2. génère `nginx.conf` avec `envsubst` ;
+3. teste la config (`nginx -t`) avant de démarrer ;
+4. `exec "$@"` lance le `CMD`.
+
 - `daemon off;` : nginx reste au premier plan, sinon le conteneur s'arrêterait tout de suite.
-- `exec` : nginx remplace le shell et devient le PID 1, c'est donc lui qui reçoit les signaux de `docker stop`.
+- `exec` : nginx remplace le script et devient le PID 1, c'est donc lui qui reçoit les signaux de `docker stop`.
 
 ### back (API)
 
@@ -122,9 +155,13 @@ a un gestionnaire de paquets (`apk`) avec des versions récentes, et `--no-cache
 
 **Port exposé** : `9000` (FastCGI, seulement sur le réseau interne).
 
-**Entrypoint** : `CMD ["php-fpm83", "-F"]`
+**Entrypoint** : `ENTRYPOINT ["/entrypoint.sh"]` + `CMD ["php-fpm83", "-F"]`
+
+[back/entrypoint.sh](back/entrypoint.sh) vérifie que `FPM_MAX_CHILDREN` est un nombre > 0 et que `PHP_MEMORY_LIMIT` a
+la forme `64M`/`1G`, prévient si on demande `travelpayouts` sans token, affiche la config puis fait `exec "$@"`.
+
 - `-F` : FPM reste au premier plan (pas de démon).
-- Forme JSON (exec) : `php-fpm83` est directement le PID 1, sans shell.
+- Grâce à `exec`, `php-fpm83` devient le PID 1 à la place du script.
 
 ### front
 
@@ -146,8 +183,23 @@ a un gestionnaire de paquets (`apk`) avec des versions récentes, et `--no-cache
 
 **Port exposé** : `3000` (variable `PORT`).
 
-**Entrypoint** : `CMD exec node --max-old-space-size=$NODE_MAX_MEMORY server.js`
-- Forme shell pour pouvoir utiliser la variable `$NODE_MAX_MEMORY`, avec `exec` pour que node soit le PID 1.
+**Entrypoint** : `ENTRYPOINT ["/entrypoint.sh"]` + `CMD ["node", "server.js"]`
+
+[front/entrypoint.sh](front/entrypoint.sh) vérifie que `PORT` et `NODE_MAX_MEMORY` sont des nombres, puis exporte
+`NODE_OPTIONS=--max-old-space-size=$NODE_MAX_MEMORY` (node lit ses options dans cette variable) et fait `exec "$@"`
+pour que node soit le PID 1.
+
+### Pourquoi ENTRYPOINT + CMD
+
+- L'`ENTRYPOINT` (le script) fait toujours la préparation : vérifier les arguments, générer la config.
+- Le `CMD` est la commande lancée à la fin, on peut la remplacer sans perdre la préparation
+  (ex. `docker run devdocker-proxy nginx -T` pour afficher la config générée).
+- Un argument invalide fait échouer le conteneur dès le démarrage avec un message clair, au lieu d'un bug plus tard :
+
+```sh
+$ docker run --rm -e FPM_MAX_CHILDREN=abc devdocker-back
+Erreur : FPM_MAX_CHILDREN doit être un nombre > 0 (reçu : 'abc')
+```
 
 ## Arguments attendus au run
 
@@ -188,6 +240,7 @@ Les limites sont choisies en cohérence avec les arguments applicatifs, pour que
 
 `docker stop` / `docker compose down` envoie un signal au PID 1 du conteneur, attend `stop_grace_period` (10 s ici),
 puis envoie SIGKILL. Pour que ça marche, chaque process principal est le PID 1 (grâce à `exec` ou à la forme JSON du `CMD`)
+(le script d'entrypoint se remplace par la vraie commande avec `exec`, il ne reste pas entre docker et le process)
 et sait s'arrêter proprement :
 
 | Service | Signal | Comportement |
@@ -213,4 +266,4 @@ Vérifié : `docker compose stop` arrête toute la stack en moins d'une seconde,
 - **Reproductible** : le Dockerfile décrit exactement l'installation, n'importe qui obtient la même image.
 - **Isolé mais configurable** : limites CPU/RAM et variables d'environnement par conteneur, comme une VM mais sans hyperviseur.
 - **Orchestration simple** : un seul `docker-compose.yml` décrit le réseau, l'ordre de démarrage et les ressources.
-- **Pas besoin de Docker Hub** : on part d'un OS minimal et on installe soi-même ce qu'il faut.
+- **Pas besoin de Docker Hub** : on part de `scratch` et du rootfs officiel d'Alpine, et on installe soi-même ce qu'il faut.
