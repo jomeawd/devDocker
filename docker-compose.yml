@@ -1,6 +1,16 @@
 services:
+  # Image de base construite depuis scratch, utilisée par les 3 autres images.
+  # Son conteneur ne fait rien : il lance "true" et s'arrête tout de suite (code 0).
+  base:
+    build: ./base
+    image: devdocker-base
+    command: ["true"]
+
   back:
-    build: ./back
+    build:
+      context: ./back
+      additional_contexts:
+        base: service:base
     environment:
       FLIGHT_PROVIDER: ${FLIGHT_PROVIDER:-mock}
       TRAVELPAYOUTS_TOKEN: ${TRAVELPAYOUTS_TOKEN:-}
@@ -20,7 +30,10 @@ services:
     stop_grace_period: 10s
 
   front:
-    build: ./front
+    build:
+      context: ./front
+      additional_contexts:
+        base: service:base
     environment:
       PORT: ${FRONT_PORT:-3000}
       NODE_MAX_MEMORY: ${NODE_MAX_MEMORY:-96}
@@ -38,7 +51,10 @@ services:
     stop_grace_period: 10s
 
   proxy:
-    build: ./proxy
+    build:
+      context: ./proxy
+      additional_contexts:
+        base: service:base
     ports:
       - "${PROXY_PORT:-8088}:80"
     environment:
