@@ -12,7 +12,7 @@ http {
     server {
         listen 80;
         set $back back:9000;
-        set $front front:3000;
+        set $front front:${FRONT_PORT};
 
         location /api/ {
             include fastcgi_params;

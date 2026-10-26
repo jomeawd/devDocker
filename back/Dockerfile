@@ -7,7 +7,7 @@ COPY . .
 RUN composer install --no-dev --no-interaction && php83 bin/console cache:warmup && chown -R nobody var
 COPY www.conf /etc/php83/php-fpm.d/www.conf
 
-ENV FPM_MAX_CHILDREN=4 PHP_MEMORY_LIMIT=128M
+ENV FPM_MAX_CHILDREN=4 PHP_MEMORY_LIMIT=48M
 EXPOSE 9000
 STOPSIGNAL SIGQUIT
 CMD ["php-fpm83", "-F"]
