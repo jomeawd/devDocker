@@ -1,0 +1,39 @@
+services:
+  back:
+    build: ./back
+    environment:
+      FLIGHT_PROVIDER: ${FLIGHT_PROVIDER:-mock}
+      TRAVELPAYOUTS_TOKEN: ${TRAVELPAYOUTS_TOKEN:-}
+      FPM_MAX_CHILDREN: 4
+      PHP_MEMORY_LIMIT: 128M
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
+
+  front:
+    build: ./front
+    environment:
+      PORT: 3000
+      NODE_MAX_MEMORY: 96
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  proxy:
+    build: ./proxy
+    ports:
+      - "8088:80"
+    environment:
+      NGINX_WORKER_PROCESSES: 2
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 64M
+    depends_on:
+      - back
+      - front
