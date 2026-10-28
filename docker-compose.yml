@@ -76,3 +76,41 @@ services:
         condition: service_healthy
       front:
         condition: service_healthy
+
+  # --- CI : lint + tests ---
+
+  # Vérifie le code du projet (monté en lecture seule) puis s'arrête : code 0 = propre, 1 = erreurs.
+  lint:
+    build:
+      context: ./ci/lint
+      additional_contexts:
+        base: service:base
+    volumes:
+      - .:/lint/code:ro
+    environment:
+      NODE_MAX_MEMORY: ${LINT_NODE_MAX_MEMORY:-128}
+    deploy:
+      resources:
+        limits:
+          cpus: "${LINT_CPUS:-1}"
+          memory: ${LINT_MEMORY:-256M}
+    stop_grace_period: 5s
+
+  # Teste la stack à travers le proxy une fois qu'il est prêt, puis s'arrête : code 0 = tests ok.
+  test:
+    build:
+      context: ./ci/test
+      additional_contexts:
+        base: service:base
+    environment:
+      TARGET_URL: ${TEST_TARGET_URL:-http://proxy}
+      TEST_TIMEOUT: ${TEST_TIMEOUT:-10}
+    deploy:
+      resources:
+        limits:
+          cpus: "${TEST_CPUS:-0.25}"
+          memory: ${TEST_MEMORY:-32M}
+    stop_grace_period: 5s
+    depends_on:
+      proxy:
+        condition: service_healthy
